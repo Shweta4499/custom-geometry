@@ -12,7 +12,6 @@ function MorphMesh() {
     const params = useRef({
         progress: 0.0,
     });
-
     const geometry = useMemo(() => {
         const shape = new THREE.Shape();
         shape.moveTo(0, 0);
