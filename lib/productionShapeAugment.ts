@@ -5,10 +5,10 @@ import type { FoldLineForWeld } from "./foldLineForWeld";
 export const PRODUCTION_SEAM_X = -8;
 
 const FEATURE_CY = 0;
-const HOLE_W = 1.0;
-const HOLE_H = 1.0;
-const TAB_DEPTH = 0.55;
-const TAB_HALF_H = 0.55;
+const HOLE_W = 5.0;
+const HOLE_H = 5.0;
+const TAB_DEPTH = 1.1;
+const TAB_HALF_H = 1.1;
 
 function rectPath(
     xmin: number,

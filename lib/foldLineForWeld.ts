@@ -33,6 +33,15 @@ export type FoldLineForWeld = {
 const _tmp = new THREE.Vector2();
 const _u = new THREE.Vector2();
 
+/** Perpendicular distance from `xy` to infinite line through p0–p1 (XY). */
+export function perpendicularDistanceFromFoldXY(
+    xy: THREE.Vector2,
+    p0: THREE.Vector2,
+    p1: THREE.Vector2,
+): number {
+    return Math.sqrt(distancePointToLineSqXY(xy, p0, p1));
+}
+
 /** Squared perpendicular distance from `xy` to infinite line through p0–p1 (XY). */
 export function distancePointToLineSqXY(
     xy: THREE.Vector2,
@@ -88,4 +97,13 @@ export function vertexEligibleForFoldWeld(
     }
 
     return true;
+}
+
+/** Midpoint of the crease segment in XY (z = 0); default hinge anchor for both bones. */
+export function foldLineAnchorPoint(fold: FoldLineForWeld): THREE.Vector3 {
+    return new THREE.Vector3(
+        (fold.p0.x + fold.p1.x) * 0.5,
+        (fold.p0.y + fold.p1.y) * 0.5,
+        0,
+    );
 }

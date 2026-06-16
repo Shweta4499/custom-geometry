@@ -8,7 +8,9 @@ import {
 } from "./productionShapeAugment";
 
 /** Runtime geometry tweak (parsed SVG shapes are cloned then augmented). */
-export type SceneShapeAugment = "productionSeamHole" | "productionSeamExtension";
+export type SceneShapeAugment =
+    | "productionSeamHole"
+    | "productionSeamExtension";
 
 /** One test case: unfolded union + the two bone-owned sub-shapes (shape0 = b0, shape1 = b1). */
 export type JointSkinningScenario = {
@@ -82,6 +84,34 @@ export const JOINT_SKINNING_SCENARIOS: JointSkinningScenario[] = [
             maxDistance: 0.08,
             skipWeldRects: [
                 { xmin: -1.08, xmax: 1.08, ymin: -1.08, ymax: 1.08 },
+            ],
+        },
+    },
+    {
+        id: "complexFlap",
+        label: "Complex flap — multi-notch, 2 holes & 2 tabs",
+        notes: "Castle-shaped outline with side bays, two seam holes, two interlocking tabs, and off-seam holes on each panel. Four weld-skip zones.",
+        unfoldedSvgPath:
+            "M -14 -9 L -6 -9 L -6 -6 L -2 -6 L -2 -7 L 0 -7 L 0 -9 L 2 -9 L 2 -6 L 6 -6 L 6 -9 L 14 -9 L 14 9 L 6 9 L 6 6 L 2 6 L 2 9 L 0 9 L 0 6.5 L -3 6.5 L -3 5.5 L 0 5.5 L 0 2 L 2.5 2 L 2.5 -2 L 0 -2 L 0 -4 L 1.5 -4 L 1.5 -5.5 L 0 -5.5 L 0 -6 L -2 -6 Z" +
+            " M -2.5 -2 L 2.5 -2 L 2.5 2 L -2.5 2 Z" +
+            " M -1.5 -5.5 L 1.5 -5.5 L 1.5 -4 L -1.5 -4 Z" +
+            " M -11 -4 L -8.5 -4 L -8.5 -2 L -11 -2 Z" +
+            " M 8.5 2 L 11 2 L 11 4 L 8.5 4 Z",
+        shape0SvgPath:
+            "M -14 -9 L -6 -9 L -6 -6 L -2 -6 L -2 -9 L 0 -9 L 0 -7 L 0 -6 L 0 -5.5 L -1.5 -5.5 L -1.5 -4 L 0 -4 L 0 -2 L -2.5 -2 L -2.5 2 L 0 2 L 0 5.5 L -3 5.5 L -3 6.5 L 0 6.5 L 0 9 L -2 9 L -2 6 L -6 6 L -6 9 L -14 9 Z" +
+            " M -11 -4 L -8.5 -4 L -8.5 -2 L -11 -2 Z",
+        shape1SvgPath:
+            "M 0 -9 L 2 -9 L 2 -6 L 6 -6 L 6 -9 L 14 -9 L 14 9 L 6 9 L 6 6 L 2 6 L 2 9 L 0 9 L 0 6.5 L -3 6.5 L -3 5.5 L 0 5.5 L 0 2 L 2.5 2 L 2.5 -2 L 0 -2 L 0 -4 L 1.5 -4 L 1.5 -5.5 L 0 -5.5 L 0 -6 L -2 -6 L -2 -7 L 0 -7 Z" +
+            " M 8.5 2 L 11 2 L 11 4 L 8.5 4 Z",
+        foldLine: {
+            p0: new THREE.Vector2(0, -12),
+            p1: new THREE.Vector2(0, 12),
+            maxDistance: 0.08,
+            skipWeldRects: [
+                { xmin: -2.58, xmax: 2.58, ymin: -2.08, ymax: 2.08 },
+                { xmin: -1.58, xmax: 1.58, ymin: -5.58, ymax: -3.92 },
+                { xmin: -3.08, xmax: 0.08, ymin: 5.42, ymax: 6.58 },
+                { xmin: -2.08, xmax: 0.08, ymin: -7.08, ymax: -5.92 },
             ],
         },
     },

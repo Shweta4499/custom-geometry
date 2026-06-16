@@ -6,15 +6,17 @@ import {
     mergeGeometries,
     mergeVertices,
 } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { useMemo, useEffect, useRef, useLayoutEffect } from "react";
+import { Suspense, useMemo, useEffect, useRef, useLayoutEffect } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { OrbitControls } from "@react-three/drei";
+import { OrbitControls, useTexture } from "@react-three/drei";
 import { button, folder, Leva, useControls } from "leva";
 import {
     getJointSkinningScenario,
     JOINT_SKINNING_SCENARIOS,
 } from "@/lib/skinningScenarios";
 import {
+    foldLineAnchorPoint,
+    perpendicularDistanceFromFoldXY,
     vertexEligibleForFoldWeld,
     type FoldLineForWeld,
 } from "@/lib/foldLineForWeld";
@@ -22,9 +24,113 @@ import {
     augmentProductionSeamExtension,
     augmentProductionSeamHole,
 } from "@/lib/productionShapeAugment";
+import { LoopSubdivision } from "three-subdivide";
 
-const extrudeSettings = { depth: 1, bevelEnabled: false } as const;
+const extrudeSettings = { depth: 0.5, bevelEnabled: false } as const;
+// const EXTRUDE_Z_CENTER = extrudeSettings.depth / 2;
 const DEG = Math.PI / 180;
+const PANEL_TEXTURE_URL = "/textures/texture.png";
+const TOP_CAP_MATERIAL = 0;
+const BODY_MATERIAL = 1;
+
+const triA = new THREE.Vector3();
+const triB = new THREE.Vector3();
+const triC = new THREE.Vector3();
+const triE1 = new THREE.Vector3();
+const triE2 = new THREE.Vector3();
+const triN = new THREE.Vector3();
+
+/**
+ * UV-map the +Z cap (printed face) and split triangles into two material
+ * groups so only that cap samples the texture; sides and bottom stay solid.
+ */
+function applyTopCapTextureLayout(
+    geo: THREE.BufferGeometry,
+    capZ: number,
+): void {
+    geo.computeBoundingBox();
+    const bbox = geo.boundingBox;
+    if (!bbox) return;
+
+    const minX = bbox.min.x;
+    const minY = bbox.min.y;
+    const spanX = bbox.max.x - minX || 1;
+    const spanY = bbox.max.y - minY || 1;
+    const zEps = 1e-3;
+
+    const pos = geo.attributes.position as THREE.BufferAttribute;
+    const uv = new Float32Array(pos.count * 2);
+    for (let i = 0; i < pos.count; i++) {
+        if (pos.getZ(i) >= capZ - zEps) {
+            uv[i * 2] = (pos.getX(i) - minX) / spanX;
+            uv[i * 2 + 1] = (pos.getY(i) - minY) / spanY;
+        }
+    }
+    geo.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+
+    const topIndices: number[] = [];
+    const bodyIndices: number[] = [];
+    const index = geo.index;
+
+    const classifyTriangle = (i0: number, i1: number, i2: number) => {
+        triA.fromBufferAttribute(pos, i0);
+        triB.fromBufferAttribute(pos, i1);
+        triC.fromBufferAttribute(pos, i2);
+        triE1.subVectors(triC, triB);
+        triE2.subVectors(triA, triB);
+        triN.crossVectors(triE1, triE2).normalize();
+
+        const onTopCap =
+            triA.z >= capZ - zEps &&
+            triB.z >= capZ - zEps &&
+            triC.z >= capZ - zEps &&
+            triN.z > 0.5;
+
+        (onTopCap ? topIndices : bodyIndices).push(i0, i1, i2);
+    };
+
+    if (index) {
+        for (let t = 0; t < index.count; t += 3) {
+            classifyTriangle(
+                index.getX(t),
+                index.getX(t + 1),
+                index.getX(t + 2),
+            );
+        }
+    } else {
+        for (let t = 0; t < pos.count; t += 3) {
+            classifyTriangle(t, t + 1, t + 2);
+        }
+    }
+
+    geo.clearGroups();
+    geo.setIndex([...topIndices, ...bodyIndices]);
+    if (topIndices.length > 0) {
+        geo.addGroup(0, topIndices.length, TOP_CAP_MATERIAL);
+    }
+    if (bodyIndices.length > 0) {
+        geo.addGroup(topIndices.length, bodyIndices.length, BODY_MATERIAL);
+    }
+}
+
+// /** ExtrudeGeometry spans z ∈ [0, depth]; shift so the crease hinge lies on z = 0. */
+// function centerExtrudeZ(geo: THREE.BufferGeometry): void {
+//     geo.translate(0, 0, -EXTRUDE_Z_CENTER);
+// }
+
+/** Tessellate faces without smoothing positions (keeps rigid panels for skinning). */
+function subdivideGeo(
+    geo: THREE.BufferGeometry,
+    iterations: number,
+): THREE.BufferGeometry {
+    if (iterations <= 0) return geo;
+    const subdivided = LoopSubdivision.modify(geo, iterations, {
+        flatOnly: true,
+    });
+    geo.dispose();
+    subdivided.computeVertexNormals();
+    return subdivided;
+}
 
 function cloneShapeArray(shapes: THREE.Shape[]): THREE.Shape[] {
     return shapes.map((s) => {
@@ -91,12 +197,61 @@ function pointInShape(shape: THREE.Shape, pt: THREE.Vector2): boolean {
     return inside;
 }
 
+/**
+ * Soften the hinge by blending bone weights from 0.5 on the crease to 1.0 at
+ * `blendWidth` (perpendicular distance in XY). Needs subdivision for enough
+ * vertices in the band.
+ */
+function applyCreaseBlendWeights(
+    pos: THREE.BufferAttribute,
+    skinIndices: number[],
+    skinWeights: number[],
+    foldLine: FoldLineForWeld,
+    blendWidth: number,
+    primaryBone: 0 | 1,
+    startIdx: number,
+    endIdx: number,
+): void {
+    if (blendWidth <= 0) return;
+
+    const otherBone = primaryBone === 0 ? 1 : 0;
+    const xy = new THREE.Vector2();
+
+    for (let i = startIdx; i < endIdx; i++) {
+        xy.set(pos.getX(i), pos.getY(i));
+        const d = perpendicularDistanceFromFoldXY(xy, foldLine.p0, foldLine.p1);
+        if (d >= blendWidth) continue;
+
+        const t = d / blendWidth;
+        const wPrimary = 0.5 + 0.5 * t;
+        const wOther = 1 - wPrimary;
+        const base = i * 4;
+
+        skinIndices[base] = primaryBone;
+        skinIndices[base + 1] = otherBone;
+        skinIndices[base + 2] = 0;
+        skinIndices[base + 3] = 0;
+        skinWeights[base] = wPrimary;
+        skinWeights[base + 1] = wOther;
+        skinWeights[base + 2] = 0;
+        skinWeights[base + 3] = 0;
+    }
+}
+
 function buildSkinnedGeoOption1(
     unfoldedShapes: THREE.Shape[],
     shapes0: THREE.Shape[],
     shapes1: THREE.Shape[],
-): THREE.ExtrudeGeometry {
-    const geo = new THREE.ExtrudeGeometry(unfoldedShapes, extrudeSettings);
+    subdivisions: number,
+    foldLine: FoldLineForWeld | null,
+    creaseBlend: number,
+): THREE.BufferGeometry {
+    let geo: THREE.BufferGeometry = new THREE.ExtrudeGeometry(
+        unfoldedShapes,
+        extrudeSettings,
+    );
+    // centerExtrudeZ(geo);
+    geo = subdivideGeo(geo, subdivisions);
     const position = geo.attributes.position as THREE.BufferAttribute;
     const skinIndices: number[] = [];
     const skinWeights: number[] = [];
@@ -116,6 +271,37 @@ function buildSkinnedGeoOption1(
         } else {
             skinIndices.push(0, 1, 0, 0);
             skinWeights.push(0.5, 0.5, 0, 0);
+        }
+    }
+
+    if (foldLine !== null && creaseBlend > 0) {
+        for (let i = 0; i < position.count; i++) {
+            pt.set(position.getX(i), position.getY(i));
+            const inS0 = shapes0.some((s) => pointInShape(s, pt));
+            const inS1 = shapes1.some((s) => pointInShape(s, pt));
+            if (inS0 && !inS1) {
+                applyCreaseBlendWeights(
+                    position,
+                    skinIndices,
+                    skinWeights,
+                    foldLine,
+                    creaseBlend,
+                    0,
+                    i,
+                    i + 1,
+                );
+            } else if (inS1 && !inS0) {
+                applyCreaseBlendWeights(
+                    position,
+                    skinIndices,
+                    skinWeights,
+                    foldLine,
+                    creaseBlend,
+                    1,
+                    i,
+                    i + 1,
+                );
+            }
         }
     }
 
@@ -143,11 +329,23 @@ function buildSkinnedGeoOption1(
 function buildSkinnedGeoOption2(
     shapes0: THREE.Shape[],
     shapes1: THREE.Shape[],
+    subdivisions: number,
     weld = false,
     foldLine: FoldLineForWeld | null = null,
+    creaseBlend = 0,
 ): THREE.BufferGeometry {
-    const geo0 = new THREE.ExtrudeGeometry(shapes0, extrudeSettings);
-    const geo1 = new THREE.ExtrudeGeometry(shapes1, extrudeSettings);
+    let geo0: THREE.BufferGeometry = new THREE.ExtrudeGeometry(
+        shapes0,
+        extrudeSettings,
+    );
+    let geo1: THREE.BufferGeometry = new THREE.ExtrudeGeometry(
+        shapes1,
+        extrudeSettings,
+    );
+    // centerExtrudeZ(geo0);
+    // centerExtrudeZ(geo1);
+    geo0 = subdivideGeo(geo0, subdivisions);
+    geo1 = subdivideGeo(geo1, subdivisions);
     const count0 = (geo0.attributes.position as THREE.BufferAttribute).count;
     const count1 = (geo1.attributes.position as THREE.BufferAttribute).count;
 
@@ -200,6 +398,30 @@ function buildSkinnedGeoOption2(
         }
     }
 
+    const pos = merged.attributes.position as THREE.BufferAttribute;
+    if (foldLine !== null && creaseBlend > 0) {
+        applyCreaseBlendWeights(
+            pos,
+            skinIndices,
+            skinWeights,
+            foldLine,
+            creaseBlend,
+            0,
+            0,
+            count0,
+        );
+        applyCreaseBlendWeights(
+            pos,
+            skinIndices,
+            skinWeights,
+            foldLine,
+            creaseBlend,
+            1,
+            count0,
+            count0 + count1,
+        );
+    }
+
     merged.setAttribute(
         "skinIndex",
         new THREE.Uint16BufferAttribute(skinIndices, 4),
@@ -231,6 +453,8 @@ function SkinnedHingeDemo() {
         {
             scenarioId,
             algorithm,
+            subdivisions,
+            creaseBlend,
             weld,
             showSkeleton,
             showFoldLine,
@@ -292,6 +516,22 @@ function SkinnedHingeDemo() {
                 },
                 value: "option2",
             },
+            subdivisions: {
+                label: "Subdivision",
+                value: 2,
+                min: 0,
+                max: 8,
+                step: 1,
+                hint: "Tessellate panels; use ≥3 with crease blend",
+            },
+            creaseBlend: {
+                label: "Crease blend",
+                value: 2,
+                min: 0,
+                max: 8,
+                step: 0.1,
+                hint: "Skin-weight falloff from crease (world units); rounds the fold",
+            },
             weld: {
                 label: "Weld seam (hinge)",
                 value: true,
@@ -308,7 +548,14 @@ function SkinnedHingeDemo() {
                 value: false,
             },
             b0: folder({
-                b0x: { value: 0, min: -30, max: 30, step: 0.1, label: "x" },
+                b0x: {
+                    value: 0,
+                    min: -30,
+                    max: 30,
+                    step: 0.1,
+                    label: "x",
+                    hint: "Offset from crease anchor",
+                },
                 b0y: { value: 0, min: -30, max: 30, step: 0.1, label: "y" },
                 b0z: { value: 0, min: -10, max: 10, step: 0.1, label: "z" },
                 b0rx: { value: 0, min: -180, max: 180, step: 1, label: "rx °" },
@@ -341,6 +588,12 @@ function SkinnedHingeDemo() {
         () => getJointSkinningScenario(scenarioId as string),
         [scenarioId],
     );
+
+    /** World hinge anchor on the scenario crease (both bones pivot here + Leva offsets). */
+    const hingeAnchor = useMemo((): THREE.Vector3 => {
+        const fold = scenario.foldLine;
+        return fold ? foldLineAnchorPoint(fold) : new THREE.Vector3(0, 0, 0);
+    }, [scenario.foldLine]);
 
     const { unfoldedShapes, shapes0, shapes1 } = useMemo(() => {
         const aug = scenario.shapeAugment;
@@ -390,7 +643,7 @@ function SkinnedHingeDemo() {
     const foldLineObject = useMemo(() => {
         const fold = scenario.foldLine;
         if (!fold) return null;
-        const z = extrudeSettings.depth + 0.04;
+        const z = 0.04;
         const [a, b] = foldLineWorldEndpoints(fold, z);
         const geo = new THREE.BufferGeometry().setFromPoints([a, b]);
         return new THREE.Line(
@@ -408,11 +661,47 @@ function SkinnedHingeDemo() {
     }, [foldLineObject]);
 
     const skinnedGeo = useMemo(() => {
-        if (algorithm === "option1") {
-            return buildSkinnedGeoOption1(unfoldedShapes, shapes0, shapes1);
-        }
-        return buildSkinnedGeoOption2(shapes0, shapes1, weld, foldLineForWeld);
-    }, [algorithm, weld, foldLineForWeld, unfoldedShapes, shapes0, shapes1]);
+        const levels = Math.max(0, Math.round(subdivisions));
+        const blend = Math.max(0, creaseBlend);
+        const fold = scenario.foldLine ?? null;
+        const geo =
+            algorithm === "option1"
+                ? buildSkinnedGeoOption1(
+                      unfoldedShapes,
+                      shapes0,
+                      shapes1,
+                      levels,
+                      fold,
+                      blend,
+                  )
+                : buildSkinnedGeoOption2(
+                      shapes0,
+                      shapes1,
+                      levels,
+                      weld,
+                      foldLineForWeld ?? fold,
+                      blend,
+                  );
+        applyTopCapTextureLayout(geo, extrudeSettings.depth);
+        return geo;
+    }, [
+        algorithm,
+        subdivisions,
+        creaseBlend,
+        weld,
+        foldLineForWeld,
+        scenario.foldLine,
+        unfoldedShapes,
+        shapes0,
+        shapes1,
+    ]);
+
+    useEffect(() => {
+        const count = (skinnedGeo.attributes.position as THREE.BufferAttribute)
+            .count;
+        console.log("vertices:", count);
+        console.log(skinnedGeo.attributes.uv);
+    }, [skinnedGeo]);
 
     useEffect(() => {
         return () => {
@@ -421,14 +710,55 @@ function SkinnedHingeDemo() {
     }, [skinnedGeo]);
 
     useFrame(() => {
-        b0.position.set(b0x, b0y, b0z);
+        b0.position.set(
+            hingeAnchor.x + b0x,
+            hingeAnchor.y + b0y,
+            hingeAnchor.z + b0z,
+        );
         b0.rotation.set(b0rx * DEG, b0ry * DEG, b0rz * DEG);
         b0.scale.set(b0sx, b0sy, b0sz);
 
-        b1.position.set(b1x, b1y, b1z);
+        b1.position.set(
+            hingeAnchor.x + b1x,
+            hingeAnchor.y + b1y,
+            hingeAnchor.z + b1z,
+        );
         b1.rotation.set(b1rx * DEG, b1ry * DEG, b1rz * DEG);
         b1.scale.set(b1sx, b1sy, b1sz);
     });
+
+    const panelTexture = useTexture(PANEL_TEXTURE_URL);
+
+    const capTexture = useMemo(() => {
+        const tex = panelTexture.clone();
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.wrapS = THREE.ClampToEdgeWrapping;
+        tex.wrapT = THREE.ClampToEdgeWrapping;
+        return tex;
+    }, [panelTexture]);
+
+    const [topCapMaterial, bodyMaterial] = useMemo(() => {
+        return [
+            new THREE.MeshStandardMaterial({
+                map: capTexture,
+                roughness: 0.85,
+                metalness: 0.02,
+            }),
+            new THREE.MeshStandardMaterial({
+                color: "#c62828",
+                roughness: 0.9,
+                metalness: 0,
+            }),
+        ];
+    }, [capTexture]);
+
+    useEffect(() => {
+        return () => {
+            capTexture.dispose();
+            topCapMaterial.dispose();
+            bodyMaterial.dispose();
+        };
+    }, [capTexture, topCapMaterial, bodyMaterial]);
 
     const meshRef = useRef<THREE.SkinnedMesh>(null);
     const axesB0Ref = useRef<THREE.AxesHelper | null>(null);
@@ -466,8 +796,18 @@ function SkinnedHingeDemo() {
     useLayoutEffect(() => {
         const mesh = meshRef.current;
         if (!mesh) return;
+
+        b0.position.copy(hingeAnchor);
+        b1.position.copy(hingeAnchor);
+        b0.rotation.set(0, 0, 0);
+        b1.rotation.set(0, 0, 0);
+        b0.scale.set(1, 1, 1);
+        b1.scale.set(1, 1, 1);
+        b0.updateMatrixWorld(true);
+        b1.updateMatrixWorld(true);
+
         mesh.bind(skeleton);
-    }, [skinnedGeo, skeleton, b0, b1]);
+    }, [skinnedGeo, skeleton, b0, b1, hingeAnchor]);
 
     useEffect(() => {
         if (axesB0Ref.current) axesB0Ref.current.visible = showSkeleton;
@@ -480,9 +820,8 @@ function SkinnedHingeDemo() {
                 ref={meshRef}
                 geometry={skinnedGeo}
                 name="unfoldedShape"
-            >
-                <meshStandardMaterial color="#c62828" />
-            </skinnedMesh>
+                material={[topCapMaterial, bodyMaterial]}
+            />
             {showFoldLine && foldLineObject ? (
                 <primitive object={foldLineObject} name="fold-line-highlight" />
             ) : null}
@@ -528,7 +867,9 @@ export default function JointSkinningTestScene() {
                 <color attach="background" args={["#f0f0f0"]} />
                 <ambientLight intensity={0.55} />
                 <directionalLight position={[12, 18, 10]} intensity={1.05} />
-                <SkinnedHingeDemo />
+                <Suspense fallback={null}>
+                    <SkinnedHingeDemo />
+                </Suspense>
                 <OrbitControls makeDefault />
             </Canvas>
         </>
