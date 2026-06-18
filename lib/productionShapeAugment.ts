@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { FoldWeldFilter, T_foldLineData } from "./foldLineData";
+import type { T_foldLineData } from "./foldLineData";
 
 /** Straight shared edge between packaging g1 (shape0) and g2 (shape1). */
 export const PRODUCTION_SEAM_X = -8;
@@ -94,65 +94,11 @@ export function augmentProductionSeamExtension(
     shapes1.push(seamTabShape());
 }
 
-/** Weld skip zone around seam hole (Option 2 + fold filter). */
-export function productionSeamHoleSkipRect(): {
-    xmin: number;
-    xmax: number;
-    ymin: number;
-    ymax: number;
-} {
-    const cx = PRODUCTION_SEAM_X;
-    const hw = HOLE_W * 0.5;
-    const hh = HOLE_H * 0.5;
-    const pad = 0.08;
-    return {
-        xmin: cx - hw - pad,
-        xmax: cx + hw + pad,
-        ymin: FEATURE_CY - hh - pad,
-        ymax: FEATURE_CY + hh + pad,
-    };
-}
-
-/** Weld skip zone along seam under tab (extension case). */
-export function productionSeamExtensionSkipRect(): {
-    xmin: number;
-    xmax: number;
-    ymin: number;
-    ymax: number;
-} {
-    const cx = PRODUCTION_SEAM_X;
-    const pad = 0.06;
-    return {
-        xmin: cx - TAB_DEPTH - pad,
-        xmax: cx + pad,
-        ymin: FEATURE_CY - TAB_HALF_H - pad,
-        ymax: FEATURE_CY + TAB_HALF_H + pad,
-    };
-}
-
 export function productionFlapFoldLineBase(): T_foldLineData {
     return {
         points: [
             { x: PRODUCTION_SEAM_X, y: -20 },
             { x: PRODUCTION_SEAM_X, y: 22 },
         ],
-    };
-}
-
-export function productionFlapFoldWeldBase(): FoldWeldFilter {
-    return { maxDistance: 0.12 };
-}
-
-export function productionFlapFoldWeldWithHole(): FoldWeldFilter {
-    return {
-        ...productionFlapFoldWeldBase(),
-        skipWeldRects: [productionSeamHoleSkipRect()],
-    };
-}
-
-export function productionFlapFoldWeldWithExtension(): FoldWeldFilter {
-    return {
-        ...productionFlapFoldWeldBase(),
-        skipWeldRects: [productionSeamExtensionSkipRect()],
     };
 }
