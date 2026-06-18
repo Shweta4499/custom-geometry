@@ -1,10 +1,10 @@
-import * as THREE from "three";
 import { UNFOLDED_SHAPE_SVG_PATH } from "./unfoldedShapeSvgPath";
-import type { FoldLineForWeld } from "./foldLineForWeld";
+import type { FoldWeldFilter, T_foldLineData } from "./foldLineData";
 import {
     productionFlapFoldLineBase,
-    productionFlapFoldLineWithExtension,
-    productionFlapFoldLineWithHole,
+    productionFlapFoldWeldBase,
+    productionFlapFoldWeldWithExtension,
+    productionFlapFoldWeldWithHole,
 } from "./productionShapeAugment";
 
 /** Runtime geometry tweak (parsed SVG shapes are cloned then augmented). */
@@ -21,10 +21,14 @@ export type JointSkinningScenario = {
     shape0SvgPath: string;
     shape1SvgPath: string;
     /**
-     * Crease used when Option 2 hinge-welds (skips hole / extension via `skipWeldRects`).
-     * `skipWeldRects` excludes hole / extension strips in XY.
+     * Crease used for hinge anchor, visualization, and Option 2 hinge-welds.
+     * Pair with `foldWeld` when Option 2 weld filtering is required.
      */
-    foldLine?: FoldLineForWeld;
+    foldLine?: T_foldLineData;
+    /**
+     * Option 2 crease weld filter (`skipWeldRects` excludes hole / extension strips in XY).
+     */
+    foldWeld?: FoldWeldFilter;
     /** Optional post-parse edit for production-style paths (see `productionShapeAugment.ts`). */
     shapeAugment?: SceneShapeAugment;
 };
@@ -45,10 +49,12 @@ export const JOINT_SKINNING_SCENARIOS: JointSkinningScenario[] = [
         shape0SvgPath: "M -10 -5 L 0 -5 L 0 5 L -10 5 Z",
         shape1SvgPath: "M 0 -5 L 10 -5 L 10 5 L 0 5 Z",
         foldLine: {
-            p0: new THREE.Vector2(0, -12),
-            p1: new THREE.Vector2(0, 12),
-            maxDistance: 0.08,
+            points: [
+                { x: 0, y: -12 },
+                { x: 0, y: 12 },
+            ],
         },
+        foldWeld: { maxDistance: 0.08 },
     },
     {
         id: "extension",
@@ -60,8 +66,12 @@ export const JOINT_SKINNING_SCENARIOS: JointSkinningScenario[] = [
         shape1SvgPath:
             "M 0 -5 L 10 -5 L 10 5 L 0 5 L 0 2 L -3 2 L -3 -2 L 0 -2 Z",
         foldLine: {
-            p0: new THREE.Vector2(0, -12),
-            p1: new THREE.Vector2(0, 12),
+            points: [
+                { x: 0, y: -12 },
+                { x: 0, y: 12 },
+            ],
+        },
+        foldWeld: {
             maxDistance: 0.08,
             skipWeldRects: [
                 { xmin: -0.06, xmax: 0.06, ymin: -2.08, ymax: 2.08 },
@@ -79,8 +89,12 @@ export const JOINT_SKINNING_SCENARIOS: JointSkinningScenario[] = [
         shape1SvgPath:
             "M 0 -5 L 10 -5 L 10 5 L 0 5 L 0 1 L 1 1 L 1 -1 L 0 -1 Z",
         foldLine: {
-            p0: new THREE.Vector2(0, -12),
-            p1: new THREE.Vector2(0, 12),
+            points: [
+                { x: 0, y: -12 },
+                { x: 0, y: 12 },
+            ],
+        },
+        foldWeld: {
             maxDistance: 0.08,
             skipWeldRects: [
                 { xmin: -1.08, xmax: 1.08, ymin: -1.08, ymax: 1.08 },
@@ -104,8 +118,12 @@ export const JOINT_SKINNING_SCENARIOS: JointSkinningScenario[] = [
             "M 0 -9 L 2 -9 L 2 -6 L 6 -6 L 6 -9 L 14 -9 L 14 9 L 6 9 L 6 6 L 2 6 L 2 9 L 0 9 L 0 6.5 L -3 6.5 L -3 5.5 L 0 5.5 L 0 2 L 2.5 2 L 2.5 -2 L 0 -2 L 0 -4 L 1.5 -4 L 1.5 -5.5 L 0 -5.5 L 0 -6 L -2 -6 L -2 -7 L 0 -7 Z" +
             " M 8.5 2 L 11 2 L 11 4 L 8.5 4 Z",
         foldLine: {
-            p0: new THREE.Vector2(0, -12),
-            p1: new THREE.Vector2(0, 12),
+            points: [
+                { x: 0, y: -12 },
+                { x: 0, y: 12 },
+            ],
+        },
+        foldWeld: {
             maxDistance: 0.08,
             skipWeldRects: [
                 { xmin: -2.58, xmax: 2.58, ymin: -2.08, ymax: 2.08 },
@@ -123,6 +141,7 @@ export const JOINT_SKINNING_SCENARIOS: JointSkinningScenario[] = [
         shape0SvgPath: PRODUCTION_SHAPE0,
         shape1SvgPath: PRODUCTION_SHAPE1,
         foldLine: productionFlapFoldLineBase(),
+        foldWeld: productionFlapFoldWeldBase(),
     },
     {
         id: "production_hole",
@@ -132,7 +151,8 @@ export const JOINT_SKINNING_SCENARIOS: JointSkinningScenario[] = [
         shape0SvgPath: PRODUCTION_SHAPE0,
         shape1SvgPath: PRODUCTION_SHAPE1,
         shapeAugment: "productionSeamHole",
-        foldLine: productionFlapFoldLineWithHole(),
+        foldLine: productionFlapFoldLineBase(),
+        foldWeld: productionFlapFoldWeldWithHole(),
     },
     {
         id: "production_extension",
@@ -142,7 +162,8 @@ export const JOINT_SKINNING_SCENARIOS: JointSkinningScenario[] = [
         shape0SvgPath: PRODUCTION_SHAPE0,
         shape1SvgPath: PRODUCTION_SHAPE1,
         shapeAugment: "productionSeamExtension",
-        foldLine: productionFlapFoldLineWithExtension(),
+        foldLine: productionFlapFoldLineBase(),
+        foldWeld: productionFlapFoldWeldWithExtension(),
     },
 ];
 

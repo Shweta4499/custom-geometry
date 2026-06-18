@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { FoldLineForWeld } from "./foldLineForWeld";
+import type { FoldWeldFilter, T_foldLineData } from "./foldLineData";
 
 /** Straight shared edge between packaging g1 (shape0) and g2 (shape1). */
 export const PRODUCTION_SEAM_X = -8;
@@ -130,24 +130,29 @@ export function productionSeamExtensionSkipRect(): {
     };
 }
 
-export function productionFlapFoldLineBase(): FoldLineForWeld {
+export function productionFlapFoldLineBase(): T_foldLineData {
     return {
-        p0: new THREE.Vector2(PRODUCTION_SEAM_X, -20),
-        p1: new THREE.Vector2(PRODUCTION_SEAM_X, 22),
-        maxDistance: 0.12,
+        points: [
+            { x: PRODUCTION_SEAM_X, y: -20 },
+            { x: PRODUCTION_SEAM_X, y: 22 },
+        ],
     };
 }
 
-export function productionFlapFoldLineWithHole(): FoldLineForWeld {
+export function productionFlapFoldWeldBase(): FoldWeldFilter {
+    return { maxDistance: 0.12 };
+}
+
+export function productionFlapFoldWeldWithHole(): FoldWeldFilter {
     return {
-        ...productionFlapFoldLineBase(),
+        ...productionFlapFoldWeldBase(),
         skipWeldRects: [productionSeamHoleSkipRect()],
     };
 }
 
-export function productionFlapFoldLineWithExtension(): FoldLineForWeld {
+export function productionFlapFoldWeldWithExtension(): FoldWeldFilter {
     return {
-        ...productionFlapFoldLineBase(),
+        ...productionFlapFoldWeldBase(),
         skipWeldRects: [productionSeamExtensionSkipRect()],
     };
 }

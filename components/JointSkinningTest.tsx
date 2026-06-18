@@ -16,10 +16,12 @@ import {
 } from "@/lib/skinningScenarios";
 import {
     foldLineAnchorPoint,
+    getFoldLineEndpoints,
     perpendicularDistanceFromFoldXY,
     vertexEligibleForFoldWeld,
-    type FoldLineForWeld,
-} from "@/lib/foldLineForWeld";
+    type FoldWeldFilter,
+    type T_foldLineData,
+} from "@/lib/foldLineData";
 import {
     augmentProductionSeamExtension,
     augmentProductionSeamHole,
@@ -142,23 +144,21 @@ function cloneShapeArray(shapes: THREE.Shape[]): THREE.Shape[] {
 
 /** World-space segment for visualizing a scenario crease (respects `tRange`). */
 function foldLineWorldEndpoints(
-    fold: FoldLineForWeld,
+    fold: T_foldLineData,
     z: number,
+    tRange?: FoldWeldFilter["tRange"],
 ): [THREE.Vector3, THREE.Vector3] {
-    const dir = new THREE.Vector2().subVectors(fold.p1, fold.p0);
+    const { p0, p1 } = getFoldLineEndpoints(fold);
+    const dir = new THREE.Vector2(p1.x - p0.x, p1.y - p0.y);
     const len = dir.length();
-    const tStart = fold.tRange?.tMin ?? 0;
-    const tEnd = fold.tRange?.tMax ?? len;
+    const tStart = tRange?.tMin ?? 0;
+    const tEnd = tRange?.tMax ?? len;
     const along = (t: number): THREE.Vector3 => {
         if (len < 1e-20) {
-            return new THREE.Vector3(fold.p0.x, fold.p0.y, z);
+            return new THREE.Vector3(p0.x, p0.y, z);
         }
         const u = t / len;
-        return new THREE.Vector3(
-            fold.p0.x + u * dir.x,
-            fold.p0.y + u * dir.y,
-            z,
-        );
+        return new THREE.Vector3(p0.x + u * dir.x, p0.y + u * dir.y, z);
     };
     return [along(tStart), along(tEnd)];
 }
@@ -206,7 +206,7 @@ function applyCreaseBlendWeights(
     pos: THREE.BufferAttribute,
     skinIndices: number[],
     skinWeights: number[],
-    foldLine: FoldLineForWeld,
+    foldLine: T_foldLineData,
     blendWidth: number,
     primaryBone: 0 | 1,
     startIdx: number,
@@ -219,7 +219,7 @@ function applyCreaseBlendWeights(
 
     for (let i = startIdx; i < endIdx; i++) {
         xy.set(pos.getX(i), pos.getY(i));
-        const d = perpendicularDistanceFromFoldXY(xy, foldLine.p0, foldLine.p1);
+        const d = perpendicularDistanceFromFoldXY(xy, foldLine);
         if (d >= blendWidth) continue;
 
         const t = d / blendWidth;
@@ -243,7 +243,7 @@ function buildSkinnedGeoOption1(
     shapes0: THREE.Shape[],
     shapes1: THREE.Shape[],
     subdivisions: number,
-    foldLine: FoldLineForWeld | null,
+    foldLine: T_foldLineData | null,
     creaseBlend: number,
 ): THREE.BufferGeometry {
     let geo: THREE.BufferGeometry = new THREE.ExtrudeGeometry(
@@ -319,9 +319,10 @@ function buildSkinnedGeoOption1(
 /**
  * Option 2: merge extrusions, assign bones by mesh half, optional weld.
  *
- * When `weld` is true and the scenario provides `foldLine`, a pair is welded
- * only on the crease (within `maxDistance` of p0–p1) and outside every
- * `skipWeldRects` box — holes and extension tabs are skipped automatically.
+ * When `weld` is true and the scenario provides `foldLine` + `foldWeld`, a pair
+ * is welded only on the crease (within `maxDistance` of the fold endpoints)
+ * and outside every `skipWeldRects` box — holes and extension tabs are skipped
+ * automatically.
  *
  * When `weld` is true and `foldLine` is null, every coincident pair is welded
  * (legacy fallback for scenarios without a crease definition).
@@ -331,7 +332,8 @@ function buildSkinnedGeoOption2(
     shapes1: THREE.Shape[],
     subdivisions: number,
     weld = false,
-    foldLine: FoldLineForWeld | null = null,
+    foldLine: T_foldLineData | null = null,
+    foldWeld: FoldWeldFilter | null = null,
     creaseBlend = 0,
 ): THREE.BufferGeometry {
     let geo0: THREE.BufferGeometry = new THREE.ExtrudeGeometry(
@@ -381,9 +383,9 @@ function buildSkinnedGeoOption2(
             const geo0Idx = geo0KeyToIdx.get(posKey(j));
             if (geo0Idx === undefined) continue;
 
-            if (foldLine !== null) {
+            if (foldLine !== null && foldWeld !== null) {
                 xy.set(pos.getX(j), pos.getY(j));
-                if (!vertexEligibleForFoldWeld(xy, foldLine)) continue;
+                if (!vertexEligibleForFoldWeld(xy, foldLine, foldWeld)) continue;
             }
 
             skinIndices[j * 4] = 0;
@@ -635,22 +637,22 @@ function SkinnedHingeDemo() {
         return { b0, b1, skeleton: new THREE.Skeleton([b0, b1]) };
     }, []);
 
-    const foldLineForWeld = useMemo((): FoldLineForWeld | null => {
+    const foldWeldForOption2 = useMemo((): FoldWeldFilter | null => {
         if (algorithm !== "option2" || !weld) return null;
-        return scenario.foldLine ?? null;
-    }, [algorithm, weld, scenario.foldLine]);
+        return scenario.foldWeld ?? null;
+    }, [algorithm, weld, scenario.foldWeld]);
 
     const foldLineObject = useMemo(() => {
         const fold = scenario.foldLine;
         if (!fold) return null;
         const z = 0.04;
-        const [a, b] = foldLineWorldEndpoints(fold, z);
+        const [a, b] = foldLineWorldEndpoints(fold, z, scenario.foldWeld?.tRange);
         const geo = new THREE.BufferGeometry().setFromPoints([a, b]);
         return new THREE.Line(
             geo,
             new THREE.LineBasicMaterial({ color: 0xffab00 }),
         );
-    }, [scenario.foldLine]);
+    }, [scenario.foldLine, scenario.foldWeld?.tRange]);
 
     useEffect(() => {
         return () => {
@@ -679,7 +681,8 @@ function SkinnedHingeDemo() {
                       shapes1,
                       levels,
                       weld,
-                      foldLineForWeld ?? fold,
+                      fold,
+                      foldWeldForOption2,
                       blend,
                   );
         applyTopCapTextureLayout(geo, extrudeSettings.depth);
@@ -689,7 +692,7 @@ function SkinnedHingeDemo() {
         subdivisions,
         creaseBlend,
         weld,
-        foldLineForWeld,
+        foldWeldForOption2,
         scenario.foldLine,
         unfoldedShapes,
         shapes0,
